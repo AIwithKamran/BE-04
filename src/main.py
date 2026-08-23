@@ -1,5 +1,5 @@
 import os
-import time
+import time as time_module
 import requests
 from urllib.parse import urljoin
 from bs4 import BeautifulSoup
@@ -20,6 +20,38 @@ class Book(BaseModel):
     source_page: HttpUrl
     fetched_at: str
     
+    
+def fetch_with_retry(url, cache_filename, max_retries=1):
+    """Fetch a page; retry once on timeout/5xx, never on 404/403."""
+    attempt = 0
+    while True:
+        try:
+            return fetch(url, cache_filename)
+        except requests.exceptions.Timeout:
+            if attempt < max_retries:
+                attempt += 1
+                time.sleep(1)
+                continue
+            raise
+        except Exception as e:
+            msg = str(e)
+            # Don't retry 404 (doesn't exist) or 403 (site said no)
+            if "404" in msg or "403" in msg:
+                raise
+            # Retry once on other failures (e.g. 5xx)
+            if attempt < max_retries:
+                attempt += 1
+                time.sleep(1)
+                continue
+            raise
+
+
+def extract_book_safe(url, source_page):
+    """Wraps extract_book so one bad page doesn't kill the run."""
+    try:
+        return extract_book(url, source_page), None
+    except Exception as e:
+        return None, {"url": url, "reason": str(e)}
 
 def normalize_price(price_text):
     match  = re.search(r'[\d.]+', price_text)
@@ -108,8 +140,7 @@ def extract_book(url, source_page):
     """Fetch one book detail page and extract raw fields (no cleaning yet)."""
     # Build a safe cache filename from the URL
     cache_filename = url.rstrip("/").split("/")[-2] + ".html"
-
-    html, was_cached = fetch(url, cache_filename)
+    html, was_cached = fetch_with_retry(url, cache_filename)
     if not was_cached:
         time.sleep(0.5)
 
@@ -220,14 +251,43 @@ def discover_book_urls():
     return seen  # dict: book_url -> source_page
 
 if __name__ == "__main__":
+    run_start = datetime.now(timezone.utc)
+
     url_map = discover_book_urls()
-    raw_records = [extract_book(url, source) for url, source in url_map.items()]
+    url_map["https://books.toscrape.com/catalogue/this-book-does-not-exist_9999/index.html"] = "test"
+
+    raw_records = []
+    failed_pages = []
+    cache_hits_before = None  # optional finer tracking if you want it later
+
+    for url, source in url_map.items():
+        record, error = extract_book_safe(url, source)
+        if record:
+            raw_records.append(record)
+        else:
+            failed_pages.append(error)
 
     print(f"detail_pages={len(raw_records)}")
 
     good, bad = clean_and_validate(raw_records)
     save_output(good, bad)
 
+    run_end = datetime.now(timezone.utc)
+
+    report = {
+        "start_time": run_start.isoformat(),
+        "duration_seconds": (run_end - run_start).total_seconds(),
+        "catalogue_pages_fetched": MAX_CATALOGUE_PAGES,
+        "detail_pages_attempted": len(url_map),
+        "valid_records": len(good),
+        "invalid_records": len(bad),
+        "failed_pages": len(failed_pages),
+        "failed_page_details": failed_pages,
+    }
+
+    with open("output/run-report.json", "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2)
+
     print(f"valid_records={len(good)}")
     print(f"invalid_records={len(bad)}")
-       
+    print(f"failed_pages={len(failed_pages)}")
