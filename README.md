@@ -8,3 +8,5 @@
 - **Why this is appropriate:** The site exists specifically for scraping practice, I'm only taking publicly visible data, and I'm respecting rate limits and identifying myself honestly.
 
 I will not reuse this code on another site without checking its rules and terms first.
+
+- **robots.txt result:** Requested https://books.toscrape.com/robots.txt → HTTP 404 Not Found. No robots file found — this isn't permission by itself, just the absence of a rule. Scraping is still justified because the site is an explicit public sandbox for practice.
