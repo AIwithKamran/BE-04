@@ -4,7 +4,69 @@ import requests
 from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 from datetime import datetime, timezone
+import re
+import json
+from pydantic import BaseModel, ValidationError, HttpUrl
 
+
+class Book(BaseModel):
+    title: str
+    product_url: HttpUrl
+    price_text: str
+    price_gbp: float
+    availability_text: str
+    rating_text: str | None
+    description: str | None
+    source_page: HttpUrl
+    fetched_at: str
+    
+
+def normalize_price(price_text):
+    match  = re.search(r'[\d.]+', price_text)
+    if not match:
+        raise ValueError(f"Could not parse price from: {price_text!r}")
+    return float(match.group())
+
+
+def clean_and_validate(raw_records):
+    """Normalize raw records, validate against schema, split good/bad."""
+    good = []
+    bad = []
+    seen_urls = set()
+
+    for raw in raw_records:
+        try:
+            # Skip duplicates by canonical URL
+            if raw["product_url"] in seen_urls:
+                continue
+            seen_urls.add(raw["product_url"])
+
+            price_gbp = normalize_price(raw["price_text"])
+
+            candidate = {
+                **raw,
+                "price_gbp": price_gbp,
+            }
+
+            book = Book(**candidate)
+            good.append(json.loads(book.model_dump_json()))
+
+        except (ValidationError, ValueError, KeyError) as e:
+            bad.append({
+                "record": raw,
+                "reason": str(e),
+            })
+
+    return good, bad
+
+
+def save_output(good, bad):
+    os.makedirs("output", exist_ok=True)
+    with open("output/books.json", "w", encoding="utf-8") as f:
+        json.dump(good, f, indent=2)
+    with open("output/errors.json", "w", encoding="utf-8") as f:
+        json.dump(bad, f, indent=2)
+        
 
 USER_AGENT = 'FlyRankInternshipA9/1.0 (+https://github.com/AIwithKamran/BE-04.git)'
 TIMEOUT = 10
@@ -159,8 +221,13 @@ def discover_book_urls():
 
 if __name__ == "__main__":
     url_map = discover_book_urls()
-    records = [extract_book(url, source) for url, source in url_map.items()]
+    raw_records = [extract_book(url, source) for url, source in url_map.items()]
 
-    print(f"detail_pages={len(records)}")
-    print(records[0])
+    print(f"detail_pages={len(raw_records)}")
+
+    good, bad = clean_and_validate(raw_records)
+    save_output(good, bad)
+
+    print(f"valid_records={len(good)}")
+    print(f"invalid_records={len(bad)}")
        
